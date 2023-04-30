@@ -5,9 +5,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
-	"time"
-
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -16,76 +13,17 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
+	"time"
 )
 
+// magic numbers
 const MAJOR_VERSION = 0x01
 
 var BTC_attestation = [8]byte{0x05, 0x88, 0x96, 0x0d, 0x73, 0xd7, 0x19, 0x01}
 var Pending_attestation = [8]byte{0x83, 0xdf, 0xe3, 0x0d, 0x2e, 0xf9, 0x0c, 0x8e}
 var HEADER_MAGIC = [31]byte{0x00, 0x4f, 0x70, 0x65, 0x6e, 0x54, 0x69, 0x6d, 0x65, 0x73, 0x74, 0x61, 0x6d, 0x70, 0x73, 0x00, 0x00, 0x50, 0x72, 0x6f, 0x6f, 0x66, 0x00, 0xbf, 0x89, 0xe2, 0xe8, 0x84, 0xe8, 0x92, 0x94}
 
-type MerkleTree interface {
-	Digest() []byte
-	Proof(footer []Op, proofs chan Proof) error
-}
-
-type Proof struct {
-	Leaf  *Leaf
-	Proof []Op
-}
-
-type Op struct {
-	Tag byte
-	Arg []byte
-}
-
-type Fork struct {
-	digest []byte
-	Left   MerkleTree
-	Right  MerkleTree
-}
-
-func (f *Fork) Proof(footer []Op, proofs chan Proof) error {
-	il := []Op{{0xf0, f.Right.Digest()}, {0x08, f.Digest()}}
-	ir := []Op{{0xf1, f.Left.Digest()}, {0x08, f.Digest()}}
-	il = append(il, footer...)
-	ir = append(ir, footer...)
-	if e := f.Left.Proof(il, proofs); e != nil {
-		return e
-	}
-	if e := f.Right.Proof(ir, proofs); e != nil {
-		return e
-	}
-	return nil
-}
-
-func (f *Fork) Digest() []byte {
-	if len(f.digest) == 32 {
-		return f.digest
-	}
-	h := sha256.New()
-	h.Write(f.Left.Digest())
-	h.Write(f.Right.Digest())
-	f.digest = h.Sum(nil)
-	return f.digest
-}
-
-type Leaf struct {
-	name   string
-	digest [32]byte
-}
-
-func (v *Leaf) Proof(footer []Op, proofs chan Proof) error {
-	proofs <- Proof{v, footer}
-	return nil
-}
-
-func (v *Leaf) Digest() []byte {
-	return v.digest[:]
-}
-
+// flags
 var upgrade = flag.String("u", "", "upgrade pending .ots file")
 var directory = flag.String("d", "", "directory of files to stamp")
 var calendar = flag.String("c", "https://finney.calendar.eternitywall.com", "calendar")
@@ -142,8 +80,7 @@ func main() {
 		panic(e)
 	}
 
-	// sort the inputs by digest
-	// to have deterministic merkle tree
+	// sort the inputs by digest to have deterministic merkle tree
 	sort.Slice(builder, func(i, j int) bool {
 		dg1 := builder[i].Digest()
 		dg2 := builder[j].Digest()
@@ -207,6 +144,7 @@ func main() {
 	}
 
 	proofs := make(chan Proof, 64)
+
 	go root.Proof([]Op{}, proofs)
 
 	if e := os.MkdirAll(output_dir_name, os.ModePerm); e != nil {
@@ -232,51 +170,6 @@ func main() {
 			}
 		}
 	}
-}
-
-func (p *Proof) WriteTo(f io.Writer) (n int64, err error) {
-	if k, e := f.Write(HEADER_MAGIC[:]); e != nil {
-		err = e
-		return
-	} else {
-		n += int64(k)
-	}
-	if k, e := f.Write([]byte{MAJOR_VERSION, 0x08}); e != nil {
-		err = e
-		return
-	} else {
-		n += int64(k)
-	}
-	if k, e := f.Write(p.Leaf.digest[:]); e != nil {
-		err = e
-		return
-	} else {
-		n += int64(hex.EncodedLen(k))
-	}
-	for _, i := range p.Proof {
-		if k, e := f.Write([]byte{i.Tag}); e != nil {
-			err = e
-			return
-		} else {
-			n += int64(k)
-		}
-		switch {
-		case i.Tag == 0xf1 || i.Tag == 0xf0:
-			if k, e := write_varint(f, int64(len(i.Arg))); e != nil {
-				err = e
-				return
-			} else {
-				n += int64(k)
-			}
-			if k, e := f.Write(i.Arg); e != nil {
-				err = e
-				return
-			} else {
-				n += int64(k)
-			}
-		}
-	}
-	return
 }
 
 func parse_header(r io.Reader) ([]byte, error) {
@@ -367,13 +260,9 @@ func upgrade_attestation(r io.Reader, attestation [8]byte, result []byte, buf *b
 		write_varint(buf, j)
 		return nil
 	case Pending_attestation:
-		// buf.Write([]byte{0xff, 0x00})
-		// buf.Write(attestation[:])
 		j := read_varint(r)
-		// write_varint(buf, j)
 		raw_uri := make([]byte, j)
 		io.ReadFull(r, raw_uri)
-		// buf.Write(raw_uri)
 		if URI, err := url.Parse(fmt.Sprintf("%s/timestamp/%x", raw_uri[1:], result)); err != nil {
 			return err
 		} else {
@@ -397,6 +286,16 @@ func upgrade_attestation(r io.Reader, attestation [8]byte, result []byte, buf *b
 
 }
 
+func write_headers(URI *url.URL, w io.Writer) {
+	w.Write([]byte(fmt.Sprint("POST /digest HTTP/1.1\r\n", URI.Path)))
+	w.Write([]byte(fmt.Sprintf("Host: %s\r\n", URI.Hostname())))
+	w.Write([]byte("User-Agent: barkyq-http-client/1.0\r\n"))
+	w.Write([]byte("Accept: application/vnd.opentimestamps.v1\r\n"))
+	w.Write([]byte("Content-Type: application/x-www-form-urlencoded\r\n"))
+	w.Write([]byte("Content-Length: 32\r\n"))
+	w.Write([]byte("\r\n"))
+}
+
 func submit_digest(URI *url.URL, digest []byte) (r io.Reader, err error) {
 	var conn io.ReadWriter
 	if c, e := tls.Dial("tcp", URI.Host+fmt.Sprintf(":%d", port), &tls.Config{ServerName: URI.Hostname()}); e != nil {
@@ -406,16 +305,10 @@ func submit_digest(URI *url.URL, digest []byte) (r io.Reader, err error) {
 		conn = c
 	}
 	wb := bufio.NewWriter(conn)
-	wb.Write([]byte(fmt.Sprint("POST /digest HTTP/1.1\r\n", URI.Path)))
-	wb.Write([]byte(fmt.Sprintf("Host: %s\r\n", URI.Hostname())))
-	wb.Write([]byte("User-Agent: barkyq-http-client/1.0\r\n"))
-	wb.Write([]byte("Accept: application/vnd.opentimestamps.v1\r\n"))
-	wb.Write([]byte("Content-Type: application/x-www-form-urlencoded\r\n"))
-	wb.Write([]byte("Content-Length: 32\r\n"))
-	wb.Write([]byte("\r\n"))
-	wb.Flush()
+	write_headers(URI, wb)
 	wb.Write(digest)
 	wb.Flush()
+
 	rb := bufio.NewReader(conn)
 	return read_chunked(rb)
 }
@@ -430,212 +323,9 @@ func get_timestamp(URI *url.URL) (r io.Reader, err error) {
 		conn = c
 	}
 	wb := bufio.NewWriter(conn)
-	wb.Write([]byte(fmt.Sprintf("GET /%s HTTP/1.1\r\n", URI.Path)))
-	wb.Write([]byte(fmt.Sprintf("Host: %s\r\n", URI.Hostname())))
-	wb.Write([]byte("User-Agent: barkyq-http-client/1.0\r\n"))
-	wb.Write([]byte("Accept: application/vnd.opentimestamps.v1\r\n"))
-	wb.Write([]byte("Content-Type: application/x-www-form-urlencoded\r\n"))
-	wb.Write([]byte("\r\n"))
+	write_headers(URI, wb)
 	wb.Flush()
 
 	rb := bufio.NewReader(conn)
 	return read_chunked(rb)
-}
-
-func read_chunked(rb *bufio.Reader) (r io.Reader, err error) {
-	var chunked bool
-	var content_encoding string
-	for {
-		header_line, err := rb.ReadString('\n')
-		if err != nil {
-			panic(err)
-		}
-		if arr := strings.Split(header_line, ":"); len(arr) > 1 {
-			key := strings.TrimSpace(strings.ToLower(arr[0]))
-			val := strings.TrimSpace(strings.ToLower(arr[1]))
-			switch key {
-			case "transfer-encoding":
-				if val == "chunked" {
-					chunked = true
-				}
-			case "content-encoding":
-				content_encoding = val
-			default:
-			}
-		}
-		if header_line == "\r\n" {
-			// break at the empty CRLF
-			break
-		}
-	}
-	_, _ = chunked, content_encoding
-
-	if chunked {
-		var tmp [32]byte
-		data_buf := bytes.NewBuffer(nil)
-		for {
-			chunk, e := rb.ReadString('\n')
-			if e != nil {
-				err = e
-				return
-			}
-			chunk_size, e := strconv.ParseInt(strings.TrimSpace(chunk), 16, 64)
-			if e != nil {
-				err = e
-				return
-			}
-			if chunk_size == 0 {
-				rb.Discard(2)
-				// finished chunking
-				break
-			}
-			for chunk_size > 32 {
-				if n, e := rb.Read(tmp[:]); e == nil {
-					chunk_size -= int64(n)
-					data_buf.Write(tmp[:n])
-				} else {
-					err = e
-					return
-				}
-			}
-			if n, err := rb.Read(tmp[:chunk_size]); err == nil {
-				data_buf.Write(tmp[:n])
-			}
-			// chunk size does not account for CRLF added to end of chunk data
-			rb.Discard(2)
-		}
-		return data_buf, nil
-	} else {
-		return rb, nil
-	}
-}
-
-func (p *Proof) PrettyWriteTo(f io.Writer) (n int64, err error) {
-	w := hex.NewEncoder(f)
-	if k, e := f.Write([]byte("# leaf ")); e != nil {
-		err = e
-		return
-	} else {
-		n += int64(k)
-	}
-	if k, e := w.Write(p.Leaf.digest[:]); e != nil {
-		err = e
-		return
-	} else {
-		n += int64(hex.EncodedLen(k))
-	}
-	if k, e := f.Write([]byte{'\r', '\n'}); e != nil {
-		err = e
-		return
-	} else {
-		n += int64(k)
-	}
-	for _, i := range p.Proof {
-		switch i.Tag {
-		case 0xf1:
-			if k, e := f.Write([]byte("prepend ")); e != nil {
-				err = e
-				return
-			} else {
-				n += int64(k)
-			}
-			if k, e := w.Write(i.Arg); e != nil {
-				err = e
-				return
-			} else {
-				n += int64(hex.EncodedLen(k))
-			}
-			if k, e := f.Write([]byte{'\r', '\n'}); e != nil {
-				err = e
-				return
-			} else {
-				n += int64(k)
-			}
-		case 0xf0:
-			if k, e := f.Write([]byte("append ")); e != nil {
-				err = e
-				return
-			} else {
-				n += int64(k)
-			}
-			if k, e := w.Write(i.Arg); e != nil {
-				err = e
-				return
-			} else {
-				n += int64(hex.EncodedLen(k))
-			}
-			if k, e := f.Write([]byte{'\r', '\n'}); e != nil {
-				err = e
-				return
-			} else {
-				n += int64(k)
-			}
-		case 0x08:
-			if k, e := f.Write([]byte{'s', 'h', 'a', '2', '5', '6', '\r', '\n'}); e != nil {
-				err = e
-				return
-			} else {
-				n += int64(k)
-			}
-		case 0x00:
-			if k, e := f.Write([]byte("verify ")); e != nil {
-				err = e
-				return
-			} else {
-				n += int64(k)
-			}
-			if k, e := w.Write(i.Arg); e != nil {
-				err = e
-				return
-			} else {
-				n += int64(hex.EncodedLen(k))
-			}
-			if k, e := f.Write([]byte{'\r', '\n'}); e != nil {
-				err = e
-				return
-			} else {
-				n += int64(k)
-			}
-		}
-	}
-	return
-}
-
-func write_varint(w io.Writer, j int64) (int64, error) {
-	if j < 0 {
-		return 0, fmt.Errorf("must be non-negative")
-	}
-	for {
-		if j > 127 {
-			if _, e := w.Write([]byte{128 + byte(j%128)}); e != nil {
-				return 0, e
-			}
-			j = j / 128
-		} else {
-			k, e := w.Write([]byte{byte(j)})
-			return int64(k), e
-		}
-	}
-}
-
-func read_varint(r io.Reader) (j int64) {
-	var b [1]byte
-	builder := make([]byte, 0)
-	for {
-		if _, e := r.Read(b[:]); e != nil {
-			panic(e)
-		}
-		if b[0] > 128 {
-			builder = append(builder, b[0]-128)
-		} else {
-			builder = append(builder, b[0])
-			break
-		}
-	}
-	var power int64 = 1
-	for _, v := range builder {
-		j += int64(v) * power
-		power *= 128
-	}
-	return
 }

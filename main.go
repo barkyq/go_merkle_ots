@@ -16,33 +16,62 @@ import (
 	"time"
 )
 
-// magic numbers
+// magic number
 const MAJOR_VERSION = 0x01
 
+// magic bytes
 var BTC_attestation = [8]byte{0x05, 0x88, 0x96, 0x0d, 0x73, 0xd7, 0x19, 0x01}
 var Pending_attestation = [8]byte{0x83, 0xdf, 0xe3, 0x0d, 0x2e, 0xf9, 0x0c, 0x8e}
 var HEADER_MAGIC = [31]byte{0x00, 0x4f, 0x70, 0x65, 0x6e, 0x54, 0x69, 0x6d, 0x65, 0x73, 0x74, 0x61, 0x6d, 0x70, 0x73, 0x00, 0x00, 0x50, 0x72, 0x6f, 0x6f, 0x66, 0x00, 0xbf, 0x89, 0xe2, 0xe8, 0x84, 0xe8, 0x92, 0x94}
 
-// flags
+type Calendars []url.URL
+
+func (cs *Calendars) String() (str string) {
+	for _, val := range *cs {
+		str += fmt.Sprintf(" %s", val.String())
+	}
+	return
+}
+func (cs *Calendars) Set(value string) error {
+	if u, e := url.Parse(value); e != nil {
+		return e
+	} else {
+		*cs = append(*cs, *u)
+	}
+	return nil
+}
+
+// command line flags
+var calendars Calendars
 var upgrade = flag.String("u", "", "upgrade pending .ots file")
 var directory = flag.String("d", "", "directory of files to stamp")
-var calendar = flag.String("c", "https://finney.calendar.eternitywall.com", "calendar")
+
+// var calendar = flag.String("c", "https://finney.calendar.eternitywall.com", "calendar")
 var port = flag.Int("port", 443, "port")
 
 func main() {
+	flag.Var(&calendars, "c", "calendars")
 	flag.Parse()
+
 	output_dir_name := "proofs_" + time.Now().Format("2006_01_02")
 	if _, e := os.Stat(*directory); e != nil {
 		panic("set the -d option")
 	}
+
+	// leaf contains the hash from the pending.ots file
+	// will only be read into if -u is set
 	var leaf []byte
+
+	// footer contains the upgraded timestamp proof
+	// will not be pending
 	var footer []byte
+
 	if *upgrade != "" {
 		if f, err := os.Open(*upgrade); err != nil {
 			panic(err)
 		} else {
 			buf := bytes.NewBuffer(nil)
-			if l, err := parse_header(f); err != nil {
+			if l, err := ParseHeader(f); err != nil {
 				panic(err)
 			} else {
 				leaf = l
@@ -122,24 +151,31 @@ func main() {
 			}
 		}
 	} else {
-		if URI, err := url.Parse(*calendar); err != nil {
-			panic(err)
-		} else {
-			if r, err := submit_digest(URI, root_digest); err != nil {
-				panic(err)
-			} else {
-				filename := "pending_" + time.Now().Format("2006_01_02") + ".ots"
-				if w, e := os.Create(filename); e == nil {
-					w.Write(HEADER_MAGIC[:])
-					w.Write([]byte{MAJOR_VERSION, 0x08})
-					w.Write(root_digest)
-					io.Copy(w, r)
-					w.Close()
+		if len(calendars) == 0 {
+			fmt.Fprintf(os.Stderr, "set at least 1 calendar URL with -c flag\nroot digest: %x\n", root_digest)
+			return
+		}
+		filename := "pending_" + time.Now().Format("2006_01_02") + ".ots"
+		if w, e := os.Create(filename); e == nil {
+			w.Write(HEADER_MAGIC[:])
+			w.Write([]byte{MAJOR_VERSION, 0x08})
+			w.Write(root_digest)
+			for k, cal := range calendars {
+				if k+1 < len(calendars) {
+					w.Write([]byte{0xff})
+				}
+				URI := &cal
+				if r, err := SubmitDigest(URI, root_digest); err != nil {
+					panic(err)
 				} else {
-					panic(e)
+					io.Copy(w, r)
 				}
 			}
+			w.Close()
+		} else {
+			panic(e)
 		}
+		fmt.Fprintf(os.Stderr, "Pending Timestamp saved to %s\nupgrade it with -u after some time has passed\n", filename)
 		return
 	}
 
@@ -154,7 +190,8 @@ func main() {
 	for i := 0; i < number_of_files; i++ {
 		select {
 		case p := <-proofs:
-			if f, e := os.Create(filepath.Join(output_dir_name, p.Leaf.name+".ots")); e != nil {
+			filename := filepath.Join(output_dir_name, p.Leaf.name+".ots")
+			if f, e := os.Create(filename); e != nil {
 				panic(e)
 			} else {
 				if n, e := p.WriteTo(f); e != nil {
@@ -163,7 +200,7 @@ func main() {
 					if k, e := f.Write(footer); e != nil {
 						panic(e)
 					} else {
-						fmt.Println(p.Leaf.name, n+int64(k))
+						fmt.Printf("%s (size: %d bytes)\n", filename, n+int64(k))
 					}
 				}
 				f.Close()
@@ -172,7 +209,8 @@ func main() {
 	}
 }
 
-func parse_header(r io.Reader) ([]byte, error) {
+// ParseHeader parses an OpenTimestamps header and returns the leaf digest
+func ParseHeader(r io.Reader) ([]byte, error) {
 	var magic [31]byte
 	if _, err := io.ReadFull(r, magic[:]); err != nil {
 		return nil, err
@@ -266,7 +304,7 @@ func upgrade_attestation(r io.Reader, attestation [8]byte, result []byte, buf *b
 		if URI, err := url.Parse(fmt.Sprintf("%s/timestamp/%x", raw_uri[1:], result)); err != nil {
 			return err
 		} else {
-			if ur, err := get_timestamp(URI); err != nil {
+			if ur, err := GetTimestamp(URI); err != nil {
 				return err
 			} else {
 				var tester [1]byte
@@ -286,7 +324,9 @@ func upgrade_attestation(r io.Reader, attestation [8]byte, result []byte, buf *b
 
 }
 
-func submit_digest(URI *url.URL, digest []byte) (r io.Reader, err error) {
+// SubmitDigest takes URI of form https://calendar.com/ and a digest to be posted.
+// Returns a reader containing the response
+func SubmitDigest(URI *url.URL, digest []byte) (r io.Reader, err error) {
 	var conn io.ReadWriter
 	if c, e := tls.Dial("tcp", URI.Host+fmt.Sprintf(":%d", *port), &tls.Config{ServerName: URI.Hostname()}); e != nil {
 		err = e
@@ -295,7 +335,7 @@ func submit_digest(URI *url.URL, digest []byte) (r io.Reader, err error) {
 		conn = c
 	}
 	wb := bufio.NewWriter(conn)
-	wb.Write([]byte(fmt.Sprint("POST /digest HTTP/1.1\r\n", URI.Path)))
+	wb.Write([]byte(fmt.Sprint("POST /digest HTTP/1.1\r\n")))
 	wb.Write([]byte(fmt.Sprintf("Host: %s\r\n", URI.Hostname())))
 	wb.Write([]byte("User-Agent: barkyq-http-client/1.0\r\n"))
 	wb.Write([]byte("Accept: application/vnd.opentimestamps.v1\r\n"))
@@ -309,7 +349,9 @@ func submit_digest(URI *url.URL, digest []byte) (r io.Reader, err error) {
 	return read_chunked(rb)
 }
 
-func get_timestamp(URI *url.URL) (r io.Reader, err error) {
+// GetTimestamp takes a URI of form "https://calendar.com/timestamp/TIMESTAMP_HEX".
+// Returns r containing the response (a Proof fragment, missing the header).
+func GetTimestamp(URI *url.URL) (r io.Reader, err error) {
 	var conn io.ReadWriter
 
 	if c, e := tls.Dial("tcp", URI.Host+fmt.Sprintf(":%d", *port), &tls.Config{ServerName: URI.Hostname()}); e != nil {

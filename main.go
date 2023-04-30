@@ -286,16 +286,6 @@ func upgrade_attestation(r io.Reader, attestation [8]byte, result []byte, buf *b
 
 }
 
-func write_headers(URI *url.URL, w io.Writer) {
-	w.Write([]byte(fmt.Sprint("POST /digest HTTP/1.1\r\n", URI.Path)))
-	w.Write([]byte(fmt.Sprintf("Host: %s\r\n", URI.Hostname())))
-	w.Write([]byte("User-Agent: barkyq-http-client/1.0\r\n"))
-	w.Write([]byte("Accept: application/vnd.opentimestamps.v1\r\n"))
-	w.Write([]byte("Content-Type: application/x-www-form-urlencoded\r\n"))
-	w.Write([]byte("Content-Length: 32\r\n"))
-	w.Write([]byte("\r\n"))
-}
-
 func submit_digest(URI *url.URL, digest []byte) (r io.Reader, err error) {
 	var conn io.ReadWriter
 	if c, e := tls.Dial("tcp", URI.Host+fmt.Sprintf(":%d", *port), &tls.Config{ServerName: URI.Hostname()}); e != nil {
@@ -305,7 +295,13 @@ func submit_digest(URI *url.URL, digest []byte) (r io.Reader, err error) {
 		conn = c
 	}
 	wb := bufio.NewWriter(conn)
-	write_headers(URI, wb)
+	wb.Write([]byte(fmt.Sprint("POST /digest HTTP/1.1\r\n", URI.Path)))
+	wb.Write([]byte(fmt.Sprintf("Host: %s\r\n", URI.Hostname())))
+	wb.Write([]byte("User-Agent: barkyq-http-client/1.0\r\n"))
+	wb.Write([]byte("Accept: application/vnd.opentimestamps.v1\r\n"))
+	wb.Write([]byte("Content-Type: application/x-www-form-urlencoded\r\n"))
+	wb.Write([]byte("Content-Length: 32\r\n"))
+	wb.Write([]byte("\r\n"))
 	wb.Write(digest)
 	wb.Flush()
 
@@ -323,7 +319,12 @@ func get_timestamp(URI *url.URL) (r io.Reader, err error) {
 		conn = c
 	}
 	wb := bufio.NewWriter(conn)
-	write_headers(URI, wb)
+	wb.Write([]byte(fmt.Sprintf("GET /%s HTTP/1.1\r\n", URI.Path)))
+	wb.Write([]byte(fmt.Sprintf("Host: %s\r\n", URI.Hostname())))
+	wb.Write([]byte("User-Agent: barkyq-http-client/1.0\r\n"))
+	wb.Write([]byte("Accept: application/vnd.opentimestamps.v1\r\n"))
+	wb.Write([]byte("Content-Type: application/x-www-form-urlencoded\r\n"))
+	wb.Write([]byte("\r\n"))
 	wb.Flush()
 
 	rb := bufio.NewReader(conn)

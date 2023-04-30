@@ -2,6 +2,8 @@
 *.test
 
 go_merkle_ots
+documents*
+*.ots
 
 # Go workspace file
 go.work

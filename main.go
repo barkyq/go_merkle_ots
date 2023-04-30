@@ -298,7 +298,7 @@ func write_headers(URI *url.URL, w io.Writer) {
 
 func submit_digest(URI *url.URL, digest []byte) (r io.Reader, err error) {
 	var conn io.ReadWriter
-	if c, e := tls.Dial("tcp", URI.Host+fmt.Sprintf(":%d", port), &tls.Config{ServerName: URI.Hostname()}); e != nil {
+	if c, e := tls.Dial("tcp", URI.Host+fmt.Sprintf(":%d", *port), &tls.Config{ServerName: URI.Hostname()}); e != nil {
 		err = e
 		return
 	} else {

@@ -93,17 +93,15 @@ func main() {
 		if d.IsDir() {
 			return nil
 		}
-		number_of_files++
-		v := Leaf{name: d.Name()}
 		if f, e := file_tree.Open(path); e == nil {
+			number_of_files++
+			v := Leaf{name: d.Name()}
 			io.CopyBuffer(h, f, buffer)
+			copy(v.digest[:], h.Sum(nil))
+			h.Reset()
+			builder = append(builder, &v)
 			f.Close()
-		} else {
-			return e
 		}
-		copy(v.digest[:], h.Sum(nil))
-		h.Reset()
-		builder = append(builder, &v)
 		return nil
 	}); e != nil {
 		panic(e)

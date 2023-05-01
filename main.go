@@ -69,14 +69,13 @@ func main() {
 				fmt.Fprintf(os.Stderr, "in file: %d\n", a.height)
 			}
 		}
-	}
-
-	if len(bitcoin_attestations) == 0 {
-		return
-	} else {
-		sort.SliceStable(bitcoin_attestations, func(i, j int) bool {
-			return bitcoin_attestations[i].height < bitcoin_attestations[j].height
-		})
+		if len(bitcoin_attestations) == 0 {
+			return
+		} else {
+			sort.SliceStable(bitcoin_attestations, func(i, j int) bool {
+				return bitcoin_attestations[i].height < bitcoin_attestations[j].height
+			})
+		}
 	}
 
 	builder := make([]MerkleTree, 0)
@@ -168,7 +167,7 @@ func main() {
 		} else {
 			panic(e)
 		}
-		fmt.Fprintf(os.Stderr, "Pending Timestamp saved to %s\nupgrade it with -u after some time has passed\n", filename)
+		fmt.Fprintf(os.Stderr, "Pending timestamp saved to %s\nUpgrade it with -u after some time has passed.\n", filename)
 		return
 	}
 

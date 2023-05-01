@@ -4,7 +4,7 @@ Command line utility for [opentimestamps](https://opentimestamps.org)
 ## usage 
 Generate a root digest from the files in `<DIRECTORY>` and submit it to some number of calendar servers. Saves pending timestamp to `pending_XXX.ots`
 ```
-go_merkle_ots -d <DIRECTORY> -c <CALENDAR_URI> -c <CALENDAR_URI> -c <CALENDAR_URI>
+go_merkle_ots -d <DIRECTORY> -c <CALENDAR_URL> -c <CALENDAR_URL> -c <CALENDAR_URL>
 ```
 
 After enough time has passed, the calendar servers will each submit a BTC transaction committing to the submitted root hash, as explained in [this post](https://petertodd.org/2016/opentimestamps-announcement). Once at least one of these TXs has 6 confirmations, the pending timestamp can be upgraded by running:

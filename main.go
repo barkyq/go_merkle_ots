@@ -157,8 +157,8 @@ func main() {
 				if k+1 < len(calendars) {
 					w.Write([]byte{0xff})
 				}
-				URI := &cal
-				if r, err := SubmitDigest(URI, root_digest); err != nil {
+				URL := &cal
+				if r, err := SubmitDigest(URL, root_digest); err != nil {
 					panic(err)
 				} else {
 					io.Copy(w, r)
@@ -339,12 +339,12 @@ func upgrade_attestation(r io.Reader, attestation [8]byte, result []byte, prefix
 		return
 	case Pending_attestation:
 		j := read_varint(r)
-		raw_uri := make([]byte, j)
-		io.ReadFull(r, raw_uri)
-		if URI, err := url.Parse(fmt.Sprintf("%s/timestamp/%x", raw_uri[1:], result)); err != nil {
+		raw_url := make([]byte, j)
+		io.ReadFull(r, raw_url)
+		if URL, err := url.Parse(fmt.Sprintf("%s/timestamp/%x", raw_url[1:], result)); err != nil {
 			return err
 		} else {
-			if ur, err := GetTimestamp(URI); err != nil {
+			if ur, err := GetTimestamp(URL); err != nil {
 				return err
 			} else {
 				var tester [1]byte
@@ -352,13 +352,13 @@ func upgrade_attestation(r io.Reader, attestation [8]byte, result []byte, prefix
 				msg := bytes.NewBuffer(tester[:])
 				io.Copy(msg, ur)
 				if tester[0] != 0x08 && tester[0] != 0xf0 && tester[0] != 0xf1 {
-					fmt.Fprintf(os.Stderr, "%s: ", URI.Hostname())
+					fmt.Fprintf(os.Stderr, "%s: ", URL.Hostname())
 					io.Copy(os.Stderr, msg)
 					os.Stderr.Write([]byte{'\r', '\n'})
 					return
 				} else {
 					wg.Add(1)
-					return upgrade_timestamp(msg, result, prefix, achan, wg, URI)
+					return upgrade_timestamp(msg, result, prefix, achan, wg, URL)
 				}
 			}
 		}

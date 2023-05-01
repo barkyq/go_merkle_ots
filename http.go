@@ -58,11 +58,11 @@ func MerkleRoot(height int64) ([]byte, error) {
 	}
 }
 
-// SubmitDigest takes URI of form https://calendar.com/ and a digest to be posted.
+// SubmitDigest takes URL of form https://calendar.com/ and a digest to be posted.
 // Returns a reader containing the response
-func SubmitDigest(URI *url.URL, digest []byte) (r io.Reader, err error) {
+func SubmitDigest(URL *url.URL, digest []byte) (r io.Reader, err error) {
 	var conn io.ReadWriter
-	if c, e := tls.Dial("tcp", URI.Host+fmt.Sprintf(":%d", *port), &tls.Config{ServerName: URI.Hostname()}); e != nil {
+	if c, e := tls.Dial("tcp", URL.Host+fmt.Sprintf(":%d", *port), &tls.Config{ServerName: URL.Hostname()}); e != nil {
 		err = e
 		return
 	} else {
@@ -70,7 +70,7 @@ func SubmitDigest(URI *url.URL, digest []byte) (r io.Reader, err error) {
 	}
 	wb := bufio.NewWriter(conn)
 	wb.Write([]byte(fmt.Sprint("POST /digest HTTP/1.1\r\n")))
-	wb.Write([]byte(fmt.Sprintf("Host: %s\r\n", URI.Hostname())))
+	wb.Write([]byte(fmt.Sprintf("Host: %s\r\n", URL.Hostname())))
 	wb.Write([]byte("User-Agent: barkyq-http-client/1.0\r\n"))
 	wb.Write([]byte("Accept: application/vnd.opentimestamps.v1\r\n"))
 	wb.Write([]byte("Content-Type: application/x-www-form-urlencoded\r\n"))
@@ -83,19 +83,19 @@ func SubmitDigest(URI *url.URL, digest []byte) (r io.Reader, err error) {
 	return read_chunked(rb)
 }
 
-// GetTimestamp takes a URI of form "https://calendar.com/timestamp/TIMESTAMP_HEX".
+// GetTimestamp takes a URL of form "https://calendar.com/timestamp/TIMESTAMP_HEX".
 // Returns r containing the response (a Proof fragment, missing the header).
-func GetTimestamp(URI *url.URL) (r io.Reader, err error) {
+func GetTimestamp(URL *url.URL) (r io.Reader, err error) {
 	var conn io.ReadWriter
-	if c, e := tls.Dial("tcp", URI.Host+fmt.Sprintf(":%d", *port), &tls.Config{ServerName: URI.Hostname()}); e != nil {
+	if c, e := tls.Dial("tcp", URL.Host+fmt.Sprintf(":%d", *port), &tls.Config{ServerName: URL.Hostname()}); e != nil {
 		err = e
 		return
 	} else {
 		conn = c
 	}
 	wb := bufio.NewWriter(conn)
-	wb.Write([]byte(fmt.Sprintf("GET %s HTTP/1.1\r\n", URI.Path)))
-	wb.Write([]byte(fmt.Sprintf("Host: %s\r\n", URI.Hostname())))
+	wb.Write([]byte(fmt.Sprintf("GET %s HTTP/1.1\r\n", URL.Path)))
+	wb.Write([]byte(fmt.Sprintf("Host: %s\r\n", URL.Hostname())))
 	wb.Write([]byte("User-Agent: barkyq-http-client/1.0\r\n"))
 	wb.Write([]byte("Accept: application/vnd.opentimestamps.v1\r\n"))
 	wb.Write([]byte("Content-Type: application/x-www-form-urlencoded\r\n"))

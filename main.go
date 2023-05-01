@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha256"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
@@ -13,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -24,36 +23,22 @@ var BTC_attestation = [8]byte{0x05, 0x88, 0x96, 0x0d, 0x73, 0xd7, 0x19, 0x01}
 var Pending_attestation = [8]byte{0x83, 0xdf, 0xe3, 0x0d, 0x2e, 0xf9, 0x0c, 0x8e}
 var HEADER_MAGIC = [31]byte{0x00, 0x4f, 0x70, 0x65, 0x6e, 0x54, 0x69, 0x6d, 0x65, 0x73, 0x74, 0x61, 0x6d, 0x70, 0x73, 0x00, 0x00, 0x50, 0x72, 0x6f, 0x6f, 0x66, 0x00, 0xbf, 0x89, 0xe2, 0xe8, 0x84, 0xe8, 0x92, 0x94}
 
-type Calendars []url.URL
-
-func (cs *Calendars) String() (str string) {
-	for _, val := range *cs {
-		str += fmt.Sprintf(" %s", val.String())
-	}
-	return
-}
-func (cs *Calendars) Set(value string) error {
-	if u, e := url.Parse(value); e != nil {
-		return e
-	} else {
-		*cs = append(*cs, *u)
-	}
-	return nil
-}
-
 // command line flags
-var calendars Calendars
+var calendars Calendars // see utils.go
 var upgrade = flag.String("u", "", "upgrade pending .ots file")
 var directory = flag.String("d", "", "directory of files to stamp")
-
-// var calendar = flag.String("c", "https://finney.calendar.eternitywall.com", "calendar")
 var port = flag.Int("port", 443, "port")
+
+type Attestation struct {
+	body   []byte
+	height int64
+	url    *url.URL
+}
 
 func main() {
 	flag.Var(&calendars, "c", "calendars")
 	flag.Parse()
 
-	output_dir_name := "proofs_" + time.Now().Format("2006_01_02")
 	if _, e := os.Stat(*directory); e != nil {
 		panic("set the -d option")
 	}
@@ -64,24 +49,34 @@ func main() {
 
 	// footer contains the upgraded timestamp proof
 	// will not be pending
-	var footer []byte
+	var bitcoin_attestations []*Attestation
 
 	if *upgrade != "" {
+		var achan chan *Attestation
 		if f, err := os.Open(*upgrade); err != nil {
 			panic(err)
 		} else {
-			buf := bytes.NewBuffer(nil)
-			if l, err := ParseHeader(f); err != nil {
+			leaf, achan, err = Upgrade(f)
+			if err != nil {
 				panic(err)
-			} else {
-				leaf = l
-				if err = upgrade_timestamp(f, l, buf); err != nil {
-					fmt.Println(err.Error())
-					os.Exit(0)
-				}
-				footer = buf.Bytes()
 			}
 		}
+		for a := range achan {
+			bitcoin_attestations = append(bitcoin_attestations, a)
+			if a.url != nil {
+				fmt.Fprintf(os.Stderr, "%s: %d\n", a.url.Hostname(), a.height)
+			} else {
+				fmt.Fprintf(os.Stderr, "in file: %d\n", a.height)
+			}
+		}
+	}
+
+	if len(bitcoin_attestations) == 0 {
+		return
+	} else {
+		sort.SliceStable(bitcoin_attestations, func(i, j int) bool {
+			return bitcoin_attestations[i].height < bitcoin_attestations[j].height
+		})
 	}
 
 	builder := make([]MerkleTree, 0)
@@ -181,33 +176,42 @@ func main() {
 
 	go root.Proof([]Op{}, proofs)
 
-	if e := os.MkdirAll(output_dir_name, os.ModePerm); e != nil {
-		panic(e)
+	output_dirs := make([]string, 0)
+	for _, b := range bitcoin_attestations[:1] {
+		output_dir_name := fmt.Sprintf("proofs_%d", b.height)
+		if e := os.MkdirAll(output_dir_name, os.ModePerm); e != nil {
+			panic(e)
+		} else {
+			output_dirs = append(output_dirs, output_dir_name)
+		}
 	}
 
-	for i := 0; i < number_of_files; i++ {
+	for j := 0; j < number_of_files; j++ {
 		select {
 		case p := <-proofs:
-			filename := filepath.Join(output_dir_name, p.Leaf.name+".ots")
-			if f, e := os.Create(filename); e != nil {
-				panic(e)
-			} else {
-				if n, e := p.WriteTo(f); e != nil {
+			for i, o := range output_dirs {
+				filename := filepath.Join(o, p.Leaf.name+".ots")
+				if f, e := os.Create(filename); e != nil {
 					panic(e)
 				} else {
-					if k, e := f.Write(footer); e != nil {
+					if _, e := p.WriteTo(f); e != nil {
 						panic(e)
 					} else {
-						fmt.Printf("%s (size: %d bytes)\n", filename, n+int64(k))
+						if _, e := f.Write(bitcoin_attestations[i].body); e != nil {
+							panic(e)
+						}
 					}
+					f.Close()
 				}
-				f.Close()
 			}
 		}
 	}
+	for _, v := range output_dirs {
+		fmt.Fprintf(os.Stderr, "saved to %s\n", v)
+	}
 }
 
-// ParseHeader parses an OpenTimestamps header and returns the leaf digest
+// ParseHeader parses an OpenTimestamps header and returns the leaf digest.
 func ParseHeader(r io.Reader) ([]byte, error) {
 	var magic [31]byte
 	if _, err := io.ReadFull(r, magic[:]); err != nil {
@@ -235,7 +239,30 @@ func ParseHeader(r io.Reader) ([]byte, error) {
 	return leaf, err
 }
 
-func upgrade_timestamp(r io.Reader, leaf []byte, buf *bytes.Buffer) (err error) {
+// Upgrade takes a pending .ots file and returns the leaf digest and a channel with upgraded attestations.
+func Upgrade(r io.Reader) ([]byte, chan *Attestation, error) {
+	achan := make(chan *Attestation)
+	var wg sync.WaitGroup
+	if l, err := ParseHeader(r); err != nil {
+		return nil, nil, err
+	} else {
+		wg.Add(1)
+		go func() {
+			defer close(achan)
+			if err = upgrade_timestamp(r, l, nil, achan, &wg, nil); err != nil {
+				panic(err)
+			}
+			wg.Wait()
+		}()
+		return l, achan, nil
+	}
+}
+
+// upgrade helper function
+func upgrade_timestamp(r io.Reader, leaf []byte, prefix []byte, achan chan *Attestation, wg *sync.WaitGroup, url *url.URL) (err error) {
+	defer wg.Done()
+	buf := bytes.NewBuffer(nil)
+	buf.Write(prefix)
 	result := make([]byte, 0)
 	result = append(result, leaf...)
 	var attestation [8]byte
@@ -273,9 +300,10 @@ func upgrade_timestamp(r io.Reader, leaf []byte, buf *bytes.Buffer) (err error) 
 			if _, err = io.ReadFull(r, attestation[:]); err != nil {
 				return
 			}
-			return upgrade_attestation(r, attestation, result, buf)
+			return upgrade_attestation(r, attestation, result, buf.Bytes(), achan, wg, url)
 		case tag[0] == 0xff:
-			if err = upgrade_timestamp(r, result, buf); err != nil {
+			wg.Add(1)
+			if err = upgrade_timestamp(r, result, buf.Bytes(), achan, wg, url); err != nil {
 				return
 			}
 		default:
@@ -285,16 +313,30 @@ func upgrade_timestamp(r io.Reader, leaf []byte, buf *bytes.Buffer) (err error) 
 	}
 }
 
-func upgrade_attestation(r io.Reader, attestation [8]byte, result []byte, buf *bytes.Buffer) error {
+// upgrade helper function
+func upgrade_attestation(r io.Reader, attestation [8]byte, result []byte, prefix []byte, achan chan *Attestation, wg *sync.WaitGroup, url *url.URL) (e error) {
 	switch attestation {
 	case BTC_attestation:
+		buf := bytes.NewBuffer(nil)
+		buf.Write(prefix)
 		buf.Write([]byte{0x00})
 		buf.Write(attestation[:])
 		j := read_varint(r)
 		write_varint(buf, j)
 		j = read_varint(r)
 		write_varint(buf, j)
-		return nil
+		if mroot, e := MerkleRoot(j); e == nil {
+			for k, b := range mroot {
+				if b != result[32-k-1] {
+					fmt.Fprintf(os.Stderr, "%s: height %d light-client verification failed!\n", url.Hostname(), j)
+					return nil
+				}
+			}
+			achan <- &Attestation{buf.Bytes(), j, url}
+		} else {
+			return e
+		}
+		return
 	case Pending_attestation:
 		j := read_varint(r)
 		raw_uri := make([]byte, j)
@@ -307,66 +349,20 @@ func upgrade_attestation(r io.Reader, attestation [8]byte, result []byte, buf *b
 			} else {
 				var tester [1]byte
 				ur.Read(tester[:])
+				msg := bytes.NewBuffer(tester[:])
+				io.Copy(msg, ur)
 				if tester[0] != 0x08 && tester[0] != 0xf0 && tester[0] != 0xf1 {
-					return fmt.Errorf("Pending Confirmation in Blockchain")
+					fmt.Fprintf(os.Stderr, "%s: ", URI.Hostname())
+					io.Copy(os.Stderr, msg)
+					os.Stderr.Write([]byte{'\r', '\n'})
+					return
 				} else {
-					buf.Write(tester[:])
-					_, err = io.Copy(buf, ur)
-					return err
+					wg.Add(1)
+					return upgrade_timestamp(msg, result, prefix, achan, wg, URI)
 				}
 			}
 		}
 	default:
 		return fmt.Errorf("unknown attestation")
 	}
-
-}
-
-// SubmitDigest takes URI of form https://calendar.com/ and a digest to be posted.
-// Returns a reader containing the response
-func SubmitDigest(URI *url.URL, digest []byte) (r io.Reader, err error) {
-	var conn io.ReadWriter
-	if c, e := tls.Dial("tcp", URI.Host+fmt.Sprintf(":%d", *port), &tls.Config{ServerName: URI.Hostname()}); e != nil {
-		err = e
-		return
-	} else {
-		conn = c
-	}
-	wb := bufio.NewWriter(conn)
-	wb.Write([]byte(fmt.Sprint("POST /digest HTTP/1.1\r\n")))
-	wb.Write([]byte(fmt.Sprintf("Host: %s\r\n", URI.Hostname())))
-	wb.Write([]byte("User-Agent: barkyq-http-client/1.0\r\n"))
-	wb.Write([]byte("Accept: application/vnd.opentimestamps.v1\r\n"))
-	wb.Write([]byte("Content-Type: application/x-www-form-urlencoded\r\n"))
-	wb.Write([]byte("Content-Length: 32\r\n"))
-	wb.Write([]byte("\r\n"))
-	wb.Write(digest)
-	wb.Flush()
-
-	rb := bufio.NewReader(conn)
-	return read_chunked(rb)
-}
-
-// GetTimestamp takes a URI of form "https://calendar.com/timestamp/TIMESTAMP_HEX".
-// Returns r containing the response (a Proof fragment, missing the header).
-func GetTimestamp(URI *url.URL) (r io.Reader, err error) {
-	var conn io.ReadWriter
-
-	if c, e := tls.Dial("tcp", URI.Host+fmt.Sprintf(":%d", *port), &tls.Config{ServerName: URI.Hostname()}); e != nil {
-		err = e
-		return
-	} else {
-		conn = c
-	}
-	wb := bufio.NewWriter(conn)
-	wb.Write([]byte(fmt.Sprintf("GET /%s HTTP/1.1\r\n", URI.Path)))
-	wb.Write([]byte(fmt.Sprintf("Host: %s\r\n", URI.Hostname())))
-	wb.Write([]byte("User-Agent: barkyq-http-client/1.0\r\n"))
-	wb.Write([]byte("Accept: application/vnd.opentimestamps.v1\r\n"))
-	wb.Write([]byte("Content-Type: application/x-www-form-urlencoded\r\n"))
-	wb.Write([]byte("\r\n"))
-	wb.Flush()
-
-	rb := bufio.NewReader(conn)
-	return read_chunked(rb)
 }

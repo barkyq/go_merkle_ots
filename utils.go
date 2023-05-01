@@ -1,80 +1,27 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
+	"encoding/hex"
 	"fmt"
 	"io"
-	"strconv"
-	"strings"
+	"net/url"
 )
 
-func read_chunked(rb *bufio.Reader) (r io.Reader, err error) {
-	var chunked bool
-	var content_encoding string
-	for {
-		header_line, err := rb.ReadString('\n')
-		if err != nil {
-			panic(err)
-		}
-		if arr := strings.Split(header_line, ":"); len(arr) > 1 {
-			key := strings.TrimSpace(strings.ToLower(arr[0]))
-			val := strings.TrimSpace(strings.ToLower(arr[1]))
-			switch key {
-			case "transfer-encoding":
-				if val == "chunked" {
-					chunked = true
-				}
-			case "content-encoding":
-				content_encoding = val
-			default:
-			}
-		}
-		if header_line == "\r\n" {
-			// break at the empty CRLF
-			break
-		}
-	}
-	_, _ = chunked, content_encoding
+type Calendars []url.URL
 
-	if chunked {
-		var tmp [32]byte
-		data_buf := bytes.NewBuffer(nil)
-		for {
-			chunk, e := rb.ReadString('\n')
-			if e != nil {
-				err = e
-				return
-			}
-			chunk_size, e := strconv.ParseInt(strings.TrimSpace(chunk), 16, 64)
-			if e != nil {
-				err = e
-				return
-			}
-			if chunk_size == 0 {
-				rb.Discard(2)
-				// finished chunking
-				break
-			}
-			for chunk_size > 32 {
-				if n, e := rb.Read(tmp[:]); e == nil {
-					chunk_size -= int64(n)
-					data_buf.Write(tmp[:n])
-				} else {
-					err = e
-					return
-				}
-			}
-			if n, err := rb.Read(tmp[:chunk_size]); err == nil {
-				data_buf.Write(tmp[:n])
-			}
-			// chunk size does not account for CRLF added to end of chunk data
-			rb.Discard(2)
-		}
-		return data_buf, nil
-	} else {
-		return rb, nil
+func (cs *Calendars) String() (str string) {
+	for _, val := range *cs {
+		str += fmt.Sprintf(" %s", val.String())
 	}
+	return
+}
+func (cs *Calendars) Set(value string) error {
+	if u, e := url.Parse(value); e != nil {
+		return e
+	} else {
+		*cs = append(*cs, *u)
+	}
+	return nil
 }
 
 func write_varint(w io.Writer, j int64) (int64, error) {
@@ -112,6 +59,51 @@ func read_varint(r io.Reader) (j int64) {
 	for _, v := range builder {
 		j += int64(v) * power
 		power *= 128
+	}
+	return
+}
+
+func (p *Proof) WriteTo(f io.Writer) (n int64, err error) {
+	if k, e := f.Write(HEADER_MAGIC[:]); e != nil {
+		err = e
+		return
+	} else {
+		n += int64(k)
+	}
+	if k, e := f.Write([]byte{MAJOR_VERSION, 0x08}); e != nil {
+		err = e
+		return
+	} else {
+		n += int64(k)
+	}
+	if k, e := f.Write(p.Leaf.digest[:]); e != nil {
+		err = e
+		return
+	} else {
+		n += int64(hex.EncodedLen(k))
+	}
+	for _, i := range p.Proof {
+		if k, e := f.Write([]byte{i.Tag}); e != nil {
+			err = e
+			return
+		} else {
+			n += int64(k)
+		}
+		switch {
+		case i.Tag == 0xf1 || i.Tag == 0xf0:
+			if k, e := write_varint(f, int64(len(i.Arg))); e != nil {
+				err = e
+				return
+			} else {
+				n += int64(k)
+			}
+			if k, e := f.Write(i.Arg); e != nil {
+				err = e
+				return
+			} else {
+				n += int64(k)
+			}
+		}
 	}
 	return
 }

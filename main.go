@@ -190,7 +190,7 @@ func main() {
 		select {
 		case p := <-proofs:
 			for i, o := range output_dirs {
-				filename := filepath.Join(o, p.Leaf.name+".ots")
+				filename := filepath.Join(o, fmt.Sprintf("%s_%x.ots", p.Leaf.name, p.Leaf.digest[:4]))
 				if f, e := os.Create(filename); e != nil {
 					panic(e)
 				} else {

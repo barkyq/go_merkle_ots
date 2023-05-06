@@ -1,6 +1,8 @@
 # go_merkle_ots
 Command line utility for [opentimestamps](https://opentimestamps.org)
 
+Deprecated in favour of [timestamp](https://github.com/barkyq/timestamp)
+
 ## usage 
 Generate a root digest from the files in `<DIRECTORY>` and submit it to some number of calendar servers. Saves pending timestamp to `pending_XXX.ots`
 ```
